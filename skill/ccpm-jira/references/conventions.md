@@ -13,9 +13,9 @@ Read this before doing any file operations across all phases.
 ├── epics/
 │   ├── <feature-name>/
 │   │   ├── epic.md                # Technical epic
-│   │   ├── <N>.md                 # Task files (named by GitHub issue number after sync)
+│   │   ├── <N>.md                 # Task files (named by Jira issue number after sync)
 │   │   ├── <N>-analysis.md        # Parallel work stream analysis
-│   │   ├── github-mapping.md      # Issue number → URL mapping
+│   │   ├── jira-mapping.md        # Issue key → URL mapping
 │   │   ├── execution-status.md    # Active agents tracker
 │   │   └── updates/
 │   │       └── <issue_N>/
@@ -24,6 +24,7 @@ Read this before doing any file operations across all phases.
 │   │           └── execution.md  # Execution state
 │   └── archived/
 │       └── <feature-name>/        # Completed epics
+├── jira-config.md                 # Jira project config (project key, base URL)
 └── context/                       # Project context docs (separate system)
 ```
 
@@ -50,7 +51,7 @@ created: <ISO 8601>
 updated: <ISO 8601>
 progress: 0%                # recalculated when tasks close
 prd: .claude/prds/<name>.md
-github: https://github.com/<owner>/<repo>/issues/<N>  # set on sync
+jira: https://<org>.atlassian.net/browse/<PROJ-N>  # set on sync
 ---
 ```
 
@@ -61,7 +62,7 @@ name: <Task Title>
 status: open | in-progress | closed
 created: <ISO 8601>
 updated: <ISO 8601>
-github: https://github.com/<owner>/<repo>/issues/<N>  # set on sync
+jira: https://<org>.atlassian.net/browse/<PROJ-N>  # set on sync
 depends_on: []              # issue numbers this must wait for
 parallel: true              # can run concurrently with non-conflicting tasks
 conflicts_with: []          # issue numbers that touch the same files
@@ -97,37 +98,46 @@ sed -i.bak "/^<field>:/c\\<field>: <value>" <file>
 rm <file>.bak
 ```
 
-When stripping frontmatter to get body content for GitHub:
+When stripping frontmatter to get body content for Jira:
 ```bash
 sed '1,/^---$/d; 1,/^---$/d' <file> > /tmp/body.md
 ```
 
 ---
 
-## GitHub Operations
+## Jira Operations
 
-### Repository Safety Check (run before any write operation)
-```bash
-remote_url=$(git remote get-url origin 2>/dev/null || echo "")
-if [[ "$remote_url" == *"automazeio/ccpm"* ]]; then
-  echo "❌ Cannot write to the CCPM template repository."
-  echo "Update remote: git remote set-url origin https://github.com/YOUR/REPO.git"
-  exit 1
-fi
-REPO=$(echo "$remote_url" | sed 's|.*github.com[:/]||' | sed 's|\.git$||')
+### Project Config Preflight (run before any Jira write operation)
+
+Check `.claude/jira-config.md` exists and has `project_key` and `base_url` set.
+
+If missing, call `mcp__plugin_atlassian_atlassian__getAllProjects` to list available projects, ask the user to confirm the project, then create the config file:
+```markdown
+---
+project_key: PROJ
+base_url: https://yourorg.atlassian.net
+epic_issue_type: Epic
+task_issue_type: Story
+bug_issue_type: Bug
+---
 ```
 
 ### Authentication
-Don't pre-check authentication. Run the `gh` command and handle failure:
+Jira operations use the configured Atlassian MCP plugin. If tool calls fail, ask the user to verify the MCP server is configured and authenticated.
+
+### Getting Jira Keys
 ```bash
-gh <command> || echo "❌ GitHub CLI failed. Run: gh auth login"
+# From a task file's jira field (extracts key like PROJ-123):
+grep 'jira:' <file> | grep -oE '[A-Z]+-[0-9]+'
 ```
 
-### Getting Issue Numbers
-```bash
-# From a task file's github field:
-grep 'github:' <file> | grep -oE '[0-9]+$'
-```
+### Issue Type IDs
+Before creating issues, get issue type IDs for the project:
+Call `mcp__plugin_atlassian_atlassian__getCreateIssueMetaIssueTypes` with `projectIdOrKey: "<PROJ>"`.
+Cache the IDs in memory for the current operation — do not re-fetch per task.
+
+### Current User
+Call `mcp__plugin_atlassian_atlassian__getCurrentUser` once to get your `accountId` for assignee operations.
 
 ---
 
@@ -149,8 +159,8 @@ grep 'github:' <file> | grep -oE '[0-9]+$'
 
 - Feature names: kebab-case, lowercase, letters/numbers/hyphens, starts with a letter
 - Task files before sync: `001.md`, `002.md`, ... (sequential)
-- Task files after sync: renamed to GitHub issue number (e.g., `1234.md`)
-- Labels applied on sync: `epic`, `epic:<name>`, `feature` (for epics); `task`, `epic:<name>` (for tasks)
+- Task files after sync: renamed to Jira issue number (e.g., `1234.md` for `PROJ-1234`; use the numeric part only to preserve script compatibility)
+- Labels applied on sync: `epic`, `epic-<name>`, `feature` (for epics); `task`, `epic-<name>` (for tasks)
 
 ---
 

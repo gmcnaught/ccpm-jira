@@ -1,6 +1,6 @@
 # Execute — Start Building with Parallel Agents
 
-This phase covers analyzing GitHub issues for parallel work streams and launching agents to execute them.
+This phase covers analyzing Jira issues for parallel work streams and launching agents to execute them.
 
 ---
 
@@ -9,12 +9,12 @@ This phase covers analyzing GitHub issues for parallel work streams and launchin
 **Trigger**: User wants to understand how to parallelize work on an issue before starting.
 
 ### Preflight
-- Find the local task file: check `.claude/epics/*/<N>.md` first, then search for `github:.*issues/<N>` in frontmatter.
-- If not found: "❌ No local task for issue #<N>. Run a sync first."
+- The user provides a Jira key (e.g., `PROJ-123`). Extract the numeric part (`123`) to find the local task file: check `.claude/epics/*/123.md`, then search for `jira:.*PROJ-123` in frontmatter.
+- If not found: "❌ No local task for <key>. Run a sync first."
 
 ### Process
 
-Get issue details: `gh issue view <N> --json title,body,labels`
+Get issue details: call `mcp__plugin_atlassian_atlassian__getIssue` with `issueIdOrKey: "<key>"`.
 
 Read the local task file fully. Identify independent work streams by asking:
 - Which files will be created/modified?
@@ -28,7 +28,7 @@ Read the local task file fully. Identify independent work streams by asking:
 - UI Layer: components, pages, styles
 - Test Layer: unit tests, integration tests
 
-Create `.claude/epics/<epic_name>/<N>-analysis.md`:
+Create `.claude/epics/<epic_name>/<numeric_N>-analysis.md` (using the numeric part of the Jira key):
 
 ```markdown
 ---
@@ -72,18 +72,18 @@ parallelization_factor: <1.0-5.0>
 - Efficiency gain: <pct>%
 ```
 
-**Output**: "✅ Analysis complete for issue #<N> — N parallel streams identified. Ready to start? Say: start issue <N>"
+**Output**: "✅ Analysis complete for <jira_key> — N parallel streams identified. Ready to start? Say: start <jira_key>"
 
 ---
 
 ## Starting an Issue
 
-**Trigger**: User wants to begin work on a specific GitHub issue.
+**Trigger**: User wants to begin work on a specific Jira issue.
 
 ### Preflight
-1. Verify issue exists and is open: `gh issue view <N> --json state,title,labels,body`
-2. Find local task file (as above).
-3. Check for analysis file: `.claude/epics/*/<N>-analysis.md` — if missing, run analysis first (or do both in sequence: analyze then start).
+1. Verify issue exists and is open: call `mcp__plugin_atlassian_atlassian__getIssue` with `issueIdOrKey: "<key>"`, check the status is not Done/Closed.
+2. Find local task file (as above) — use the numeric part of the key for the filename.
+3. Check for analysis file: `.claude/epics/*/<numeric_N>-analysis.md` — if missing, run analysis first (or do both in sequence: analyze then start).
 4. Verify epic worktree exists: `git worktree list | grep "epic-<name>"` — if not: "❌ No worktree. Sync the epic first."
 
 ### Process
@@ -92,11 +92,11 @@ parallelization_factor: <1.0-5.0>
 
 **Step 2 — Create progress tracking:**
 ```bash
-mkdir -p .claude/epics/<epic>/updates/<N>
+mkdir -p .claude/epics/<epic>/updates/<numeric_N>
 current_date=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 ```
 
-Create `.claude/epics/<epic>/updates/<N>/stream-<X>.md` for each stream:
+Create `.claude/epics/<epic>/updates/<numeric_N>/stream-<X>.md` for each stream:
 ```markdown
 ---
 issue: <N>
@@ -113,35 +113,41 @@ status: in_progress
 
 ```yaml
 Task:
-  description: "Issue #<N> Stream <X>"
+  description: "<jira_key> Stream <X>"
   subagent_type: "general-purpose"
   prompt: |
-    You are working on Issue #<N> in the epic worktree at: ../epic-<name>/
-    
+    You are working on <jira_key> in the epic worktree at: ../epic-<name>/
+
     Your stream: <stream_name>
     Your scope — files to modify: <file_patterns>
     Work to complete: <stream_description>
-    
+
     Instructions:
-    1. Read full task from: .claude/epics/<epic>/<N>.md
-    2. Read analysis from: .claude/epics/<epic>/<N>-analysis.md
+    1. Read full task from: .claude/epics/<epic>/<numeric_N>.md
+    2. Read analysis from: .claude/epics/<epic>/<numeric_N>-analysis.md
     3. Work ONLY in your assigned files
-    4. Commit frequently: "Issue #<N>: <specific change>"
-    5. Update progress in: .claude/epics/<epic>/updates/<N>/stream-<X>.md
+    4. Commit frequently: "<jira_key>: <specific change>"
+    5. Update progress in: .claude/epics/<epic>/updates/<numeric_N>/stream-<X>.md
     6. If you need to touch files outside your scope, note it in your progress file and wait
     7. Never use --force on git operations
-    
+
     Complete your stream's work and mark status: completed when done.
 ```
 
 Streams with unmet dependencies are queued — launch them as their dependencies complete.
 
-**Step 4 — Assign on GitHub:**
-```bash
-gh issue edit <N> --add-assignee @me --add-label "in-progress"
+**Step 4 — Assign and transition in Jira:**
+
+Get current user: call `mcp__plugin_atlassian_atlassian__getCurrentUser` to get `accountId`.
+
+Assign the issue: call `mcp__plugin_atlassian_atlassian__editIssue`:
+```json
+{ "issueIdOrKey": "<key>", "fields": { "assignee": { "accountId": "<accountId>" } } }
 ```
 
-**Step 5 — Create execution status file** at `.claude/epics/<epic>/updates/<N>/execution.md`:
+Transition to In Progress: call `mcp__plugin_atlassian_atlassian__getTransitions` then `mcp__plugin_atlassian_atlassian__doTransition` with the "In Progress" transition ID.
+
+**Step 5 — Create execution status file** at `.claude/epics/<epic>/updates/<numeric_N>/execution.md`:
 ```markdown
 ## Active Streams
 - Stream A: <name> — Started <time>
@@ -156,15 +162,15 @@ gh issue edit <N> --add-assignee @me --add-label "in-progress"
 
 **Output:**
 ```
-✅ Started work on issue #<N>
+✅ Started work on <jira_key>
 
 Launched N agents:
   Stream A: <name> ✓ Started
   Stream B: <name> ✓ Started
   Stream C: <name> ⏸ Waiting (depends on A)
 
-Monitor: check progress in .claude/epics/<epic>/updates/<N>/
-Sync updates: "sync issue <N>"
+Monitor: check progress in .claude/epics/<epic>/updates/<numeric_N>/
+Sync updates: "sync <jira_key>"
 ```
 
 ---
@@ -174,7 +180,7 @@ Sync updates: "sync issue <N>"
 **Trigger**: User wants to launch parallel agents across all ready issues in an epic at once.
 
 ### Preflight
-- Verify `.claude/epics/<name>/epic.md` exists and has a `github:` field (i.e., it's been synced).
+- Verify `.claude/epics/<name>/epic.md` exists and has a `jira:` field (i.e., it's been synced).
 - Check for uncommitted changes: `git status --porcelain` — block if dirty.
 - Verify epic branch exists: `git branch -a | grep "epic/<name>"`
 
